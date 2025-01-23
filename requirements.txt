@@ -1,1 +1,0 @@
-npm install path pino fs multer qrcode express
