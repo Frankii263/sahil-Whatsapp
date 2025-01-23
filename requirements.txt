@@ -2,4 +2,5 @@ Flask
 requests
 whatsappapi
 pillow
-npm install path pino fs multer qrcode express
+npm
+install path pino fs multer qrcode express
