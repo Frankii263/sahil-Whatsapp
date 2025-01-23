@@ -1,1 +1,1 @@
-wab: index.js
+web: index.js
