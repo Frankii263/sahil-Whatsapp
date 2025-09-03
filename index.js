@@ -155,7 +155,7 @@ import {
           process.exit(0);
         } else {
           console.log(`${yellow}[!] Connection Lost, Reconnecting in 5 sec...${reset}`);
-          setTimeout(connectToWhatsApp, 5);
+          setTimeout(connectToWhatsApp, 500);
         }
       }
     });
