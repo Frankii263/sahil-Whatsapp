@@ -1,53 +1,17 @@
 {
-
-  "name": "whatsapp-server",
-
+  "name": "sahil-whatsapp",
   "version": "1.0.0",
-
-  "description": "A WhatsApp server to send messages via Baileys.",
-
+  "description": "WhatsApp Offline Server by Sahil Khan",
   "main": "index.js",
-
+  "type": "module",
   "scripts": {
-
     "start": "node index.js"
-
   },
-
-  "keywords": [
-
-    "whatsapp",
-
-    "server",
-
-    "baileys",
-
-    "messaging"
-
-  ],
-
-  "author": "TEDDY RULEX ðŸ–¤",
-
+  "author": "Sahil Khan",
   "license": "MIT",
-
   "dependencies": {
-
-    "@whiskeysockets/baileys": "^6.4.0",
-
-    "body-parser": "^1.20.2",
-
-    "express": "^4.18.2",
-
-    "fs": "^0.0.1-security",
-
-    "multer": "^1.4.5-lts.1",
-
-    "node-cache": "^5.1.2",
-
-    "pino": "^8.14.0"
-
-  },
-
-  "devDependencies": {}
-
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.8",
+    "pino": "^9.4.0"
+  }
 }
