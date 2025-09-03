@@ -140,7 +140,7 @@ import {
           console.log("      [ =============== SAHIL KHAN WP LOADER =============== ]\n");
 
           sendMessages(sock);
-        } else {
+        } else if (!autoSendEnabled) {
           // agar reconnect ho gaya to messages wapas start ho jayein
           console.log(`${green}[Auto Resume] Resuming message sending...${reset}`);
           sendMessages(sock);
@@ -152,10 +152,11 @@ import {
 
         if (reason === DisconnectReason.loggedOut) {
           console.log(`${yellow}[!] Session Expired, Please Pair Again${reset}`);
-          process.exit(0);
+          fs.rmSync("./auth_info", { recursive: true, force: true }); // purana session hatao
+          connectToWhatsApp(); // dobara pairing
         } else {
           console.log(`${yellow}[!] Connection Lost, Reconnecting in 5 sec...${reset}`);
-          setTimeout(connectToWhatsApp, 500);
+          setTimeout(connectToWhatsApp, 5000); // 5 seconds
         }
       }
     });
