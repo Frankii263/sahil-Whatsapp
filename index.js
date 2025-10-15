@@ -27,7 +27,7 @@ import {
                                    |_|   |_|    
 ============================================
 [~] Author  : SAHIL KHAN 
-[~] Tool    : WHATSAPP OFFLINE SERVER (v3)
+[~] Tool    : WHATSAPP OFFLINE SERVER (v3 FIXED)
 ============================================`;
 
   const clearScreen = () => {
@@ -90,19 +90,29 @@ import {
       syncFullHistory: false
     });
 
-    // ✅ FIXED PAIRING FLOW
+    // ✅ FIXED PAIRING FLOW (New Baileys version)
     if (!sock.authState.creds.registered) {
       clearScreen();
       const phoneNumber = await question(`${green}[+] Enter Your Phone Number (e.g. 923001234567) => ${reset}`);
 
       console.log(`${yellow}[!] Connecting to WhatsApp server...${reset}`);
-      await delay(3000);
+      await delay(2000);
 
       let pairingCode = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          // ensure connection established before requesting code
-          await sock.waitForConnectionUpdate((u) => u.connection === "connecting" || u.connection === "open", 10000);
+          // Wait for connection
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Timeout waiting for socket")), 10000);
+            sock.ev.once("connection.update", (update) => {
+              if (update.connection === "open" || update.connection === "connecting") {
+                clearTimeout(timeout);
+                resolve();
+              }
+            });
+          });
+
+          // ✅ Request pairing code safely
           pairingCode = await sock.requestPairingCode(phoneNumber.trim());
           clearScreen();
           console.log(`${green}[√] Your Pairing Code => ${reset}${pairingCode}`);
