@@ -6,7 +6,8 @@ import {
   makeWASocket,
   useMultiFileAuthState,
   delay,
-  DisconnectReason
+  DisconnectReason,
+  fetchLatestBaileysVersion
 } from "@whiskeysockets/baileys";
 
 (async () => {
@@ -26,7 +27,7 @@ import {
                                    |_|   |_|    
 ============================================
 [~] Author  : SAHIL KHAN 
-[~] Tool    : WHATSAPP OFFLINE SERVER (v2)
+[~] Tool    : WHATSAPP OFFLINE SERVER (v3)
 ============================================`;
 
   const clearScreen = () => {
@@ -43,6 +44,7 @@ import {
   let autoSendEnabled = false;
 
   const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+  const { version } = await fetchLatestBaileysVersion();
 
   async function sendMessages(sock) {
     autoSendEnabled = true;
@@ -55,12 +57,12 @@ import {
           if (targetNumbers.length > 0) {
             for (const targetNumber of targetNumbers) {
               await sock.sendMessage(targetNumber + "@c.us", { text: fullMessage });
-              console.log(`${green}Target Number => ${reset}${targetNumber}`);
+              console.log(`${green}Target => ${reset}${targetNumber}`);
             }
           } else {
             for (const groupUID of groupUIDs) {
               await sock.sendMessage(groupUID + "@g.us", { text: fullMessage });
-              console.log(`${green}Group UID => ${reset}${groupUID}`);
+              console.log(`${green}Group => ${reset}${groupUID}`);
             }
           }
 
@@ -79,47 +81,51 @@ import {
     }
   }
 
-  const connectToWhatsApp = async () => {
+  async function connectToWhatsApp() {
     const sock = makeWASocket({
+      version,
       logger: pino({ level: "silent" }),
       auth: state,
-      printQRInTerminal: false
+      printQRInTerminal: false,
+      syncFullHistory: false
     });
 
     // ✅ FIXED PAIRING FLOW
     if (!sock.authState.creds.registered) {
       clearScreen();
       const phoneNumber = await question(`${green}[+] Enter Your Phone Number (e.g. 923001234567) => ${reset}`);
-      console.log(`${yellow}[!] Waiting for socket connection...${reset}`);
-      await delay(5000); // wait for stable connection
 
-      let paired = false;
+      console.log(`${yellow}[!] Connecting to WhatsApp server...${reset}`);
+      await delay(3000);
+
+      let pairingCode = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          const pairingCode = await sock.requestPairingCode(phoneNumber.trim());
+          // ensure connection established before requesting code
+          await sock.waitForConnectionUpdate((u) => u.connection === "connecting" || u.connection === "open", 10000);
+          pairingCode = await sock.requestPairingCode(phoneNumber.trim());
           clearScreen();
-          console.log(`${green}[√] Your Pairing Code Is => ${reset}${pairingCode}`);
-          paired = true;
+          console.log(`${green}[√] Your Pairing Code => ${reset}${pairingCode}`);
+          console.log(`${yellow}[!] Enter this code on your WhatsApp device immediately.${reset}`);
           break;
         } catch (err) {
           console.log(`${yellow}[!] Attempt ${attempt} failed: ${err.message}${reset}`);
-          await delay(5000);
+          await delay(4000);
         }
       }
 
-      if (!paired) {
+      if (!pairingCode) {
         console.log(`${yellow}[X] Pairing Failed After 3 Attempts. Please Retry.${reset}`);
         process.exit(1);
       }
     }
 
-    // ✅ Handle Connection Updates
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect } = update;
 
       if (connection === "open") {
         clearScreen();
-        console.log(`${green}[Your WhatsApp Login ✓]${reset}`);
+        console.log(`${green}[✓] WhatsApp Connected Successfully!${reset}`);
 
         if (!messages) {
           const sendOption = await question(
@@ -135,10 +141,9 @@ import {
           } else if (sendOption === "2") {
             const groupList = await sock.groupFetchAllParticipating();
             const groupUIDsList = Object.keys(groupList);
-
             console.log(`${green}[√] WhatsApp Groups =>${reset}`);
             groupUIDsList.forEach((uid, index) => {
-              console.log(`${green}[${index + 1}] Group Name: ${reset}${groupList[uid].subject} ${green}UID: ${reset}${uid}`);
+              console.log(`${green}[${index + 1}] Name: ${reset}${groupList[uid].subject} ${green}UID: ${reset}${uid}`);
             });
 
             const numberOfGroups = await question(`${green}[+] How Many Groups to Target => ${reset}`);
@@ -154,11 +159,7 @@ import {
           haterName = await question(`${green}[+] Enter Hater Name => ${reset}`);
           intervalTime = await question(`${green}[+] Enter Message Delay (seconds) => ${reset}`);
 
-          console.log(`${green}All Details Are Filled Correctly${reset}`);
-          clearScreen();
-          console.log(`${green}Now Start Message Sending.......${reset}`);
-          console.log("      [ =============== SAHIL KHAN WP LOADER =============== ]\n");
-
+          console.log(`${green}All Details Entered! Starting message sender...${reset}`);
           sendMessages(sock);
         } else {
           console.log(`${green}[Auto Resume] Resuming message sending...${reset}`);
@@ -168,26 +169,19 @@ import {
 
       if (connection === "close") {
         const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-
         if (reason === DisconnectReason.loggedOut) {
-          console.log(`${yellow}[!] Session Expired, Please Pair Again${reset}`);
+          console.log(`${yellow}[!] Session expired, please pair again.${reset}`);
           process.exit(0);
         } else {
-          console.log(`${yellow}[!] Connection Lost, Reconnecting in 5 sec...${reset}`);
-          setTimeout(async () => {
-            const newSock = await connectToWhatsApp();
-            if (messages) {
-              console.log(`${green}[Auto Resume] Internet back, resuming message sending...${reset}`);
-              sendMessages(newSock);
-            }
-          }, 5000);
+          console.log(`${yellow}[!] Connection lost, reconnecting...${reset}`);
+          setTimeout(connectToWhatsApp, 5000);
         }
       }
     });
 
     sock.ev.on("creds.update", saveCreds);
     return sock;
-  };
+  }
 
   await connectToWhatsApp();
 
