@@ -1,126 +1,185 @@
-// server.js
-import express from "express";
+import { Boom } from "@hapi/boom";
 import fs from "fs";
-import path from "path";
-import Pino from "pino";
-import { makeWASocket, useMultiFileAuthState, delay } from "@whiskeysockets/baileys";
-import qrcode from "qrcode";
+import pino from "pino";
+import readline from "readline";
+import {
+  makeWASocket,
+  useMultiFileAuthState,
+  delay,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} from "@whiskeysockets/baileys";
 
-const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+(async () => {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const question = (text) => new Promise((resolve) => rl.question(text, resolve));
 
-const PORT = 3000;
-const SESSION_FOLDER = path.join("./auth_info");
-if (!fs.existsSync(SESSION_FOLDER)) fs.mkdirSync(SESSION_FOLDER, { recursive: true });
+  const reset = "\x1b[0m";
+  const green = "\x1b[1;32m";
+  const yellow = "\x1b[1;33m";
 
-let sock;
-let messages = [];
-let targets = [];
-let groups = [];
-let intervalTime = 5;
-let groupListCache = {};
+  const logo = `${green}
+ __    __ _           _                         
+/ /\\ /\\ \\ |__   __ _| |_ ___  __ _ _ __  _ __  
+\\ \\/  \\/ / '_ \\ / _\` | __/ __|/ _\` | '_ \\| '_ \\ 
+ \\  /\\  /| | | | (_| | |\\__ \\ (_| | |_) | |_) |
+  \\/  \\/ |_| |_|\\__,_|\\__|___/\\__,_| .__/| .__/ 
+                                   |_|   |_|    
+============================================
+[~] Author  : SAHIL KHAN 
+[~] Tool    : WHATSAPP OFFLINE SERVER 
+============================================`;
 
-// ======== HTML ROUTE ========
-app.get("/", async (req, res) => {
-  // Show QR + form
-  let qrImage = "";
-  const qrHtml = `<div id="qr" style="margin-bottom:20px;">${qrImage}</div>`;
+  const clearScreen = () => {
+    console.clear();
+    console.log(logo);
+  };
 
-  const groupsHtml = Object.keys(groupListCache).length
-    ? Object.keys(groupListCache).map((uid, i) => `<li>${i + 1}. ${groupListCache[uid].subject} (UID: ${uid})</li>`).join("")
-    : "<li>No groups fetched yet</li>";
+  const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+  const { version } = await fetchLatestBaileysVersion();
 
-  res.send(`
-  <html>
-    <body>
-      <h2>WhatsApp Web Pairing</h2>
-      ${qrHtml}
-      <form method="POST" action="/start">
-        <h3>Send Options</h3>
-        Target Numbers (comma separated): <input type="text" name="targets"/><br/>
-        Groups UID (comma separated, check below): <input type="text" name="groups"/><br/>
-        Messages File Path: <input type="text" name="file"/><br/>
-        Delay (seconds): <input type="number" name="delay" value="5"/><br/>
-        <button type="submit">Start Sending</button>
-      </form>
-      <h3>Available Groups:</h3>
-      <ul>${groupsHtml}</ul>
-    </body>
-  </html>
-  `);
-});
+  let targetNumbers = [];
+  let groupUIDs = [];
+  let messages = null;
+  let intervalTime = null;
+  let haterName = null;
+  let lastSentIndex = 0;
+  let autoSendEnabled = false;
 
-// ======== START SENDING ========
-app.post("/start", async (req, res) => {
-  targets = req.body.targets ? req.body.targets.split(",").map(t => t.trim()) : [];
-  groups = req.body.groups ? req.body.groups.split(",").map(g => g.trim()) : [];
-  intervalTime = parseInt(req.body.delay) || 5;
+  async function sendMessages(sock) {
+    autoSendEnabled = true;
+    while (autoSendEnabled) {
+      for (let i = lastSentIndex; i < messages.length; i++) {
+        try {
+          const currentTime = new Date().toLocaleTimeString();
+          const fullMessage = `${haterName} ${messages[i]}`;
 
-  if (!req.body.file || !fs.existsSync(req.body.file)) return res.send("Invalid message file path!");
+          if (targetNumbers.length > 0) {
+            for (const targetNumber of targetNumbers) {
+              await sock.sendMessage(targetNumber + "@c.us", { text: fullMessage });
+              console.log(`${green}Target Number => ${reset}${targetNumber}`);
+            }
+          } else {
+            for (const groupUID of groupUIDs) {
+              await sock.sendMessage(groupUID + "@g.us", { text: fullMessage });
+              console.log(`${green}Group UID => ${reset}${groupUID}`);
+            }
+          }
 
-  messages = fs.readFileSync(req.body.file, "utf-8").split("\n").filter(Boolean);
+          console.log(`${green}Time => ${reset}${currentTime}`);
+          console.log(`${green}Message => ${reset}${fullMessage}`);
+          console.log("    [ =============== SAHIL  WP LOADER =============== ]");
 
-  res.send(" Message sending started! Check terminal for logs.");
-
-  sendMessages();
-});
-
-// ======== CONNECT TO WHATSAPP ========
-const connectToWhatsApp = async () => {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
-
-  sock = makeWASocket({
-    logger: Pino({ level: "silent" }),
-    auth: state,
-  });
-
-  sock.ev.on("connection.update", async (update) => {
-    const { qr, connection } = update;
-    if (qr) {
-      // Save QR as data URL
-      const qrDataUrl = await qrcode.toDataURL(qr);
-      console.log("Scan this QR in your browser:");
-      console.log(qrDataUrl);
-    }
-    if (connection === "open") {
-      console.log(" WhatsApp connected!");
-      // Fetch all groups
-      const groupsList = await sock.groupFetchAllParticipating();
-      groupListCache = groupsList;
-      console.log("Available groups:");
-      Object.keys(groupsList).forEach((uid, i) => console.log(`${i + 1}. ${groupsList[uid].subject} (UID: ${uid})`));
-    }
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-};
-
-// ======== MESSAGE LOOP ========
-const sendMessages = async () => {
-  if (!sock) return console.log("Socket not connected!");
-  while (true) {
-    try {
-      for (let msg of messages) {
-        for (let t of targets) {
-          await sock.sendMessage(t + "@c.us", { text: msg });
-          console.log(`Sent to ${t}: ${msg}`);
+          await delay(intervalTime * 1000);
+        } catch (err) {
+          console.log(`${yellow}Error sending message: ${err.message}. Retrying...${reset}`);
+          lastSentIndex = i;
+          await delay(5000);
         }
-        for (let g of groups) {
-          await sock.sendMessage(g + "@g.us", { text: msg });
-          console.log(`Sent to group ${g}: ${msg}`);
-        }
-        await delay(intervalTime * 1000);
       }
-    } catch (err) {
-      console.log("Error sending messages, retrying in 5s...", err.message);
-      await delay(5000);
+      lastSentIndex = 0;
     }
   }
-};
 
-// ======== RUN SERVER ========
-app.listen(PORT, async () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  const connectToWhatsApp = async () => {
+    // UPDATED: Added browser configuration for pairing
+    const sock = makeWASocket({
+      version,
+      logger: pino({ level: "silent" }),
+      auth: state,
+      browser: ["Ubuntu", "Chrome", "20.0.04"], 
+      printQRInTerminal: false // Pairing code use kar rahe hain isliye QR off
+    });
+
+    // UPDATED: Improved Pairing Code Logic
+    if (!sock.authState.creds.registered) {
+      clearScreen();
+      console.log(`${yellow}[!] Make sure to use country code (e.g., 919876543210)${reset}`);
+      const phoneNumber = await question(`${green}[+] Enter Your Phone Number => ${reset}`);
+      
+      // Clean phone number (remove +, spaces, etc)
+      const cleanedNumber = phoneNumber.replace(/[^0-9]/g, '');
+      
+      console.log(`${yellow}[*] Generating Pairing Code...${reset}`);
+      await delay(3000); // Wait for socket stability
+
+      try {
+        const pairingCode = await sock.requestPairingCode(cleanedNumber);
+        clearScreen();
+        console.log(`${green}============================================`);
+        console.log(`${green}[√] YOUR PAIRING CODE IS => ${reset}${pairingCode}`);
+        console.log(`${green}============================================${reset}`);
+      } catch (err) {
+        console.log(`${yellow}Error generating code: ${err.message}${reset}`);
+        process.exit(1);
+      }
+    }
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect } = update;
+
+      if (connection === "open") {
+        clearScreen();
+        console.log(`${green}[Your WhatsApp Login ✓]${reset}`);
+
+        if (!messages) {
+          const sendOption = await question(
+            `${green}[1] Send to Target Number\n[2] Send to WhatsApp Group\nChoose Option => ${reset}`
+          );
+
+          if (sendOption === "1") {
+            const numberOfTargets = await question(`${green}[+] How Many Target Numbers? => ${reset}`);
+            for (let i = 0; i < numberOfTargets; i++) {
+              const targetNumber = await question(`${green}[+] Enter Target Number ${i + 1} => ${reset}`);
+              targetNumbers.push(targetNumber.replace(/[^0-9]/g, ''));
+            }
+          } else if (sendOption === "2") {
+            const groupList = await sock.groupFetchAllParticipating();
+            const groupUIDsList = Object.keys(groupList);
+
+            console.log(`${green}[√] WhatsApp Groups =>${reset}`);
+            groupUIDsList.forEach((uid, index) => {
+              console.log(`${green}[${index + 1}] Group Name: ${reset}${groupList[uid].subject} ${green}UID: ${reset}${uid}`);
+            });
+
+            const numberOfGroups = await question(`${green}[+] How Many Groups to Target => ${reset}`);
+            for (let i = 0; i < numberOfGroups; i++) {
+              const groupUID = await question(`${green}[+] Enter Group UID ${i + 1} => ${reset}`);
+              groupUIDs.push(groupUID);
+            }
+          }
+
+          const messageFilePath = await question(`${green}[+] Enter Message File Path => ${reset}`);
+          messages = fs.readFileSync(messageFilePath, "utf-8").split("\n").filter(Boolean);
+
+          haterName = await question(`${green}[+] Enter Hater Name => ${reset}`);
+          intervalTime = await question(`${green}[+] Enter Message Delay (seconds) => ${reset}`);
+
+          clearScreen();
+          console.log(`${green}Now Start Message Sending.......${reset}`);
+          sendMessages(sock);
+        } else {
+          sendMessages(sock);
+        }
+      }
+
+      if (connection === "close") {
+        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        if (reason === DisconnectReason.loggedOut) {
+          console.log(`${yellow}[!] Session Expired, Please Pair Again${reset}`);
+          fs.rmSync("./auth_info", { recursive: true, force: true });
+          process.exit(0);
+        } else {
+          console.log(`${yellow}[!] Reconnecting...${reset}`);
+          connectToWhatsApp();
+        }
+      }
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+    return sock;
+  };
+
   await connectToWhatsApp();
-});
+})();
+                
